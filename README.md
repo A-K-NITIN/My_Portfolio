@@ -86,18 +86,6 @@ Edit that single file to update:
 
 ---
 
-## ✦ Adding Your Resume Link
-
-In `src/data.js`, update this line:
-
-```js
-resumeUrl: "https://drive.google.com/your-resume-link-here",
-```
-
-Make sure the Drive file is set to **"Anyone with the link can view"**.
-
----
-
 ## ✦ Deployment
 
 This project builds to a static bundle — deploy anywhere:
