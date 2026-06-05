@@ -25,6 +25,7 @@ lerna-debug.log*
 # ── OS generated ─────────────────────────────────
 .DS_Store
 Thumbs.db
+desktop.ini
 
 # ── Editor directories ───────────────────────────
 .vscode/*
@@ -36,5 +37,13 @@ Thumbs.db
 *.sln
 *.sw?
 
-# ── Legacy / old code ────────────────────────────
-legacy_vanilla/
+# ── Legacy folder — old vanilla version ──────────
+# Keep the folder in git (has a useful README) but
+# exclude large binary/media files inside it.
+legacy_vanilla/*.pdf
+legacy_vanilla/*.PDF
+legacy_vanilla/*.jpeg
+legacy_vanilla/*.jpg
+legacy_vanilla/*.png
+legacy_vanilla/*.mp4
+legacy_vanilla/*.webm
