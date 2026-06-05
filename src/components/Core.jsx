@@ -325,7 +325,7 @@ export const CanvasBackground = () => {
       return { segments, cx, cy };
     };
     let cracks = generateCracks();
-    let crackProgress = 0; // Animates from 0 to 1 during load time
+    let crackProgress = 0;
 
     // === 2. BSOD SYSTEM ===
     const spawnBsod = () => ({
@@ -346,20 +346,77 @@ export const CanvasBackground = () => {
     });
     let bsods = [];
 
-    // === 3. DATA CRAWLERS (Content Eaters) ===
-    let crawlers = Array.from({ length: 3 }, () => ({
+    // === 3. KILL TRACKER — grows infestation when user actively hunts ===
+    // killCount: total kills. Every 3 kills spawns +1 mouse (max 8).
+    // If user never kills, count stays at 3.
+    const BASE_MICE = 3;
+    const MAX_MICE  = 8;
+    let killCount   = 0;
+
+    const makeCrawler = () => ({
       x: Math.random() > 0.5 ? -100 : window.innerWidth + 100,
       y: Math.random() * window.innerHeight,
       vx: 0, vy: 0,
-      state: 'searching', // searching, moving, feeding, exploding, dead
+      state: 'searching',
       target: null,
       feedProgress: 0,
+      feedsInSection: 0,   // how many bites taken in current section
+      currentSection: null, // section id the mouse is focused on
       particles: [],
       explodeTimer: 0,
       respawnTimer: 0
-    }));
+    });
 
-    // === SCROLL LISTENER (Natively shifts the canvas and crawlers) ===
+    // === 4. DATA CRAWLERS (Content Eaters) ===
+    let crawlers = Array.from({ length: BASE_MICE }, makeCrawler);
+
+    // === SECTION IDS in page order ===
+    const SECTION_IDS = ['hero','about','education','experience','projects','skills','certifications','coding','contact'];
+
+    // Helper — which section does a viewport-relative y belong to?
+    const getSectionForY = (vy) => {
+      const absY = vy + window.scrollY;
+      let best = null;
+      for (const id of SECTION_IDS) {
+        const el = document.getElementById(id);
+        if (!el) continue;
+        if (el.offsetTop <= absY) best = id;
+      }
+      return best;
+    };
+
+    // Helper — pick a target from a DIFFERENT section than `excludeSection`
+    const pickTargetExcluding = (targets, excludeSection) => {
+      // Try targets not in the excluded section first
+      const others = targets.filter(r => {
+        const absY = r.top + window.scrollY;
+        const sec = (() => {
+          let b = null;
+          for (const id of SECTION_IDS) {
+            const el = document.getElementById(id);
+            if (el && el.offsetTop <= absY) b = id;
+          }
+          return b;
+        })();
+        return sec !== excludeSection;
+      });
+      const pool = others.length > 0 ? others : targets;
+      const rect = pool[Math.floor(Math.random() * pool.length)];
+      return { x: rect.left + Math.random() * rect.width, y: rect.top + Math.random() * rect.height };
+    };
+
+    // Helper — check if spot on corrCanvas is already eaten (white pixel)
+    const isAlreadyEaten = (cx, cy) => {
+      const px = Math.round(Math.max(0, Math.min(W - 1, cx)));
+      const py = Math.round(Math.max(0, Math.min(H - 1, cy)));
+      try {
+        const d = corrCtx.getImageData(px, py, 1, 1).data;
+        // White pixel = already corrupted (r>200 AND a>50)
+        return d[0] > 200 && d[3] > 50;
+      } catch { return false; }
+    };
+
+    // === SCROLL LISTENER ===
     let lastScrollY = window.scrollY;
     const handleScroll = () => {
       const currentScrollY = window.scrollY;
@@ -367,14 +424,12 @@ export const CanvasBackground = () => {
       lastScrollY = currentScrollY;
 
       if (delta !== 0 && W > 0 && H > 0) {
-        // Shift corruption canvas pixels so bites stay perfectly stuck on text
         const tempCanvas = document.createElement('canvas');
         tempCanvas.width = W; tempCanvas.height = H;
         tempCanvas.getContext('2d').drawImage(corrCanvas, 0, 0);
         corrCtx.clearRect(0, 0, W, H);
         corrCtx.drawImage(tempCanvas, 0, -delta);
 
-        // Shift all crawlers and their targets vertically
         crawlers.forEach(c => {
           c.y -= delta;
           if (c.target) c.target.y -= delta;
@@ -384,11 +439,13 @@ export const CanvasBackground = () => {
     };
     window.addEventListener('scroll', handleScroll);
 
+    // === CLICK — kill mice + grow infestation ===
     const handleClick = (e) => {
+      let killed = false;
       crawlers.forEach(c => {
         if (c.state !== 'dead' && c.state !== 'exploding') {
           const dist = Math.hypot(e.clientX - c.x, e.clientY - c.y);
-          if (dist < 60) { // Hitbox to kill crawler
+          if (dist < 60) {
             c.state = 'exploding';
             c.explodeTimer = 0;
             for(let i = 0; i < 40; i++) {
@@ -398,34 +455,42 @@ export const CanvasBackground = () => {
                 life: 0, maxLife: 15 + Math.random() * 25
               });
             }
+            killed = true;
           }
         }
       });
+
+      // Every 3 kills: spawn an extra mouse if below max
+      if (killed) {
+        killCount++;
+        const targetCount = Math.min(MAX_MICE, BASE_MICE + Math.floor(killCount / 3));
+        if (crawlers.length < targetCount) {
+          crawlers.push(makeCrawler());
+        }
+      }
     };
     window.addEventListener('mousedown', handleClick);
 
+    // Cached targets refreshed every 60 frames
+    let cachedTargets = [];
     let frameCount = 0;
+
     const draw = () => {
       bgCtx.fillStyle = 'rgba(6,6,8,0.7)';
       bgCtx.fillRect(0, 0, W, H);
-      
-      // Clear mouse canvas entirely (Mice are drawn on top of everything)
       mCtx.clearRect(0, 0, W, H);
-      
       frameCount++;
 
-      // --- CRACK ANIMATION PROGRESS ---
-      if (crackProgress < 1.0) crackProgress += 0.006; // grows over first 2.5 seconds
+      if (crackProgress < 1.0) crackProgress += 0.006;
 
-      // --- GET TARGETS (Every 60 frames) ---
-      let availableTargets = [];
+      // Refresh target list every 60 frames
       if (frameCount % 60 === 0) {
-        // Find visible content elements (text, cards, buttons)
         const els = Array.from(document.querySelectorAll('h1, h2, h3, p, a, .cc-value, span, li, .card'));
+        cachedTargets = [];
         els.forEach(el => {
           const rect = el.getBoundingClientRect();
           if (rect.width > 10 && rect.height > 10 && rect.top > 50 && rect.bottom < H - 50) {
-            availableTargets.push(rect);
+            cachedTargets.push(rect);
           }
         });
       }
@@ -433,9 +498,8 @@ export const CanvasBackground = () => {
       // --- DRAW CRACKS ---
       const maxCrackDist = Math.max(W, H) * 0.8;
       cracks.segments.forEach(seg => {
-        // Animate cracks growing outward from center
         const dist = Math.hypot(seg.x1 - cracks.cx, seg.y1 - cracks.cy);
-        if (dist > maxCrackDist * crackProgress) return; // not drawn yet
+        if (dist > maxCrackDist * crackProgress) return;
 
         bgCtx.beginPath();
         bgCtx.moveTo(seg.x1, seg.y1);
@@ -460,13 +524,10 @@ export const CanvasBackground = () => {
         let b = bsods[i];
         b.life++;
         if (b.life > b.maxLife) { bsods.splice(i, 1); continue; }
-        
         const shiftX = Math.random() > 0.9 ? (Math.random() - 0.5) * 20 : 0;
         const opacity = Math.random() > 0.95 ? 0.4 : 0.85;
-        
         bgCtx.fillStyle = `rgba(0, 0, 170, ${opacity})`;
         bgCtx.fillRect(b.x + shiftX, b.y, b.w, b.h);
-        
         bgCtx.fillStyle = '#FFFFFF';
         bgCtx.font = '11px "Share Tech Mono", monospace';
         b.text.forEach((txt, idx) => {
@@ -477,35 +538,80 @@ export const CanvasBackground = () => {
 
       // --- DRAW CRAWLERS ---
       crawlers.forEach(c => {
-        // Only spawn crawlers after cracks reach 20%
         if (crackProgress < 0.2) return;
 
+        // ── SEARCHING: pick a fresh uncorrupted target ──
         if (c.state === 'searching') {
-          if (availableTargets.length > 0) {
-            // Pick a random spot inside a random target element
-            const rect = availableTargets[Math.floor(Math.random() * availableTargets.length)];
-            c.target = {
-              x: rect.left + Math.random() * rect.width,
-              y: rect.top + Math.random() * rect.height
-            };
-            c.state = 'moving';
+          if (cachedTargets.length > 0) {
+            // After 8 feeds in one section, migrate to a different section
+            const needsMigration = c.feedsInSection >= 8 && c.currentSection !== null;
+
+            // Try up to 10 candidates to find one that isn't already eaten
+            let chosen = null;
+            const pool = needsMigration
+              ? (() => {
+                  const others = cachedTargets.filter(r => {
+                    const absY = r.top + window.scrollY;
+                    let b = null;
+                    for (const id of SECTION_IDS) {
+                      const el = document.getElementById(id);
+                      if (el && el.offsetTop <= absY) b = id;
+                    }
+                    return b !== c.currentSection;
+                  });
+                  return others.length > 0 ? others : cachedTargets;
+                })()
+              : cachedTargets;
+
+            for (let attempt = 0; attempt < 10; attempt++) {
+              const rect = pool[Math.floor(Math.random() * pool.length)];
+              const tx = rect.left + Math.random() * rect.width;
+              const ty = rect.top  + Math.random() * rect.height;
+              if (!isAlreadyEaten(tx, ty)) {
+                chosen = { x: tx, y: ty };
+                // Track which section this target is in
+                const newSection = getSectionForY(ty);
+                if (newSection !== c.currentSection) {
+                  c.currentSection = newSection;
+                  c.feedsInSection = 0;
+                }
+                break;
+              }
+            }
+
+            if (chosen) {
+              c.target = chosen;
+              c.state = 'moving';
+            } else {
+              // All visible spots eaten — wander in place, wait for scroll
+              c.x += (Math.random() - 0.5) * 2;
+              c.y += (Math.random() - 0.5) * 2;
+              c.vx = c.x > W / 2 ? -1 : 1;
+            }
           } else {
-            // Idle wander if no targets found
             c.x += (Math.random() - 0.5) * 2;
             c.y += (Math.random() - 0.5) * 2;
-            c.vx = c.x > W/2 ? -1 : 1; // Fake velocity for facing direction
+            c.vx = c.x > W / 2 ? -1 : 1;
           }
-        } 
+        }
+
+        // ── MOVING ──
         else if (c.state === 'moving') {
           const dx = c.target.x - c.x;
           const dy = c.target.y - c.y;
           const dist = Math.hypot(dx, dy);
 
           if (dist < 4) {
-            c.state = 'feeding';
-            c.feedProgress = 0;
+            // Before committing to eat, re-check if spot is already corrupted
+            if (isAlreadyEaten(c.target.x, c.target.y)) {
+              // Skip — go find a new spot
+              c.state = 'searching';
+              c.target = null;
+            } else {
+              c.state = 'feeding';
+              c.feedProgress = 0;
+            }
           } else {
-            // Move slowly towards target with slight cyberpunk jitter
             const speed = 2.5 + Math.random() * 2.5;
             c.vx = (dx / dist) * speed;
             c.vy = (dy / dist) * speed;
@@ -513,7 +619,6 @@ export const CanvasBackground = () => {
             c.y += c.vy;
           }
 
-          // Glitch ghost occasionally on background canvas
           if (Math.random() > 0.6) {
             bgCtx.save();
             bgCtx.translate(c.x, c.y);
@@ -525,15 +630,13 @@ export const CanvasBackground = () => {
             bgCtx.fill();
             bgCtx.restore();
           }
-        } 
+        }
+
+        // ── FEEDING ──
         else if (c.state === 'feeding') {
-          // Normal/Fast feeding animation
-          c.feedProgress += 0.8; 
-          
-          // Draw the growing bite mark on corruption canvas (Inverts the DOM!)
-          corrCtx.fillStyle = '#FFFFFF'; 
-          
-          // Expanding jagged glitch block
+          c.feedProgress += 0.8;
+
+          corrCtx.fillStyle = '#FFFFFF';
           const size = c.feedProgress;
           corrCtx.fillRect(
             c.x - size/2 + (Math.random()-0.5)*size*0.5,
@@ -542,49 +645,41 @@ export const CanvasBackground = () => {
             8 + Math.random() * size
           );
 
-          // Stop feeding ONLY when fully corrupted this spot
-          if (c.feedProgress > 45) {
+          if (c.feedProgress > 100) {
+            c.feedsInSection++;     // count successful bite in this section
             c.state = 'searching';
-            c.target = null; // Clear target to force a new one
+            c.target = null;
           }
         }
 
-        // --- FOREGROUND DRAWING (Always visible) ---
+        // --- FOREGROUND DRAWING ---
         if (c.state === 'searching' || c.state === 'moving' || c.state === 'feeding') {
           drawAnimeMouse(mCtx, c.x, c.y, frameCount, c.state, c.vx, c.target);
         }
         else if (c.state === 'exploding') {
-          // Dramatic Cyberpunk boom on mCtx (Foreground)
           c.explodeTimer++;
-          
-          // Expanding Shockwave Ring
           mCtx.beginPath();
           mCtx.arc(c.x, c.y, c.explodeTimer * 3, 0, Math.PI * 2);
           mCtx.strokeStyle = `rgba(255, 0, 0, ${1 - c.explodeTimer / 40})`;
           mCtx.lineWidth = 2;
           mCtx.stroke();
-
-          // Error Text Pop-up
           mCtx.fillStyle = `rgba(255, 0, 0, ${1 - c.explodeTimer / 40})`;
           mCtx.font = 'bold 16px "Share Tech Mono", monospace';
           mCtx.fillText("[ERR_TERMINATED]", c.x - 60, c.y - 15 - c.explodeTimer);
-
-          // Violent Particle Burst
           c.particles.forEach(p => {
             p.x += p.vx; p.y += p.vy; p.life++;
             mCtx.fillStyle = Math.random() > 0.5 ? '#FF0000' : '#FFFF00';
             const pSize = Math.max(0, 8 - (p.life / p.maxLife) * 8);
             mCtx.fillRect(p.x, p.y, pSize, pSize);
           });
-
           if (c.explodeTimer > 40) {
             c.state = 'dead';
-            c.respawnTimer = 60 * 20 + Math.random() * 60 * 20; // Wait 20 to 40 seconds to respawn!
+            c.respawnTimer = 60 * 20 + Math.random() * 60 * 20;
           }
         }
       });
-      
-      // Reseed dead crawlers from off-screen edges after fixed time
+
+      // Reseed dead crawlers
       crawlers.forEach(c => {
         if (c.state === 'dead') {
           c.respawnTimer--;
@@ -595,6 +690,8 @@ export const CanvasBackground = () => {
             c.state = 'searching';
             c.target = null;
             c.feedProgress = 0;
+            c.feedsInSection = 0;
+            c.currentSection = null;
             c.particles = [];
             c.explodeTimer = 0;
           }
