@@ -38,4 +38,5 @@ desktop.ini
 *.sw?
 
 # ── Legacy / old code ────────────────────────────
+
 legacy_vanilla/
